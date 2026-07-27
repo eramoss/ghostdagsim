@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -122,8 +123,8 @@ double OptimalSymDiff(uint64_t nBlockTxs, uint64_t nReceiverPoolTx) {
    * L(a) as defined in the code below. (Note that meta parameters for the
    * Bloom Filter and IBLT are ignored).
    */
-  __ASSERT__(nReceiverPoolTx >= nBlockTxs - 1,
-             "Assume reciever is missing only one tx");
+  if (nReceiverPoolTx >= nBlockTxs - 1)
+    throw std::runtime_error("Assume reciever is missing only one tx");
 
   if (nReceiverPoolTx > LARGE_MEM_POOL_SIZE)
     throw std::runtime_error("Receiver mempool is too large for optimization");
