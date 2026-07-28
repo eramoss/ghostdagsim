@@ -1315,6 +1315,7 @@ GhostDagTopologyHelper::GhostDagTopologyHelper(
 
   double totalMinerBandwidth = 0;
   double totalMinerLatency = 0;
+  double maxDelay = 0;
 
   for (auto miner = m_miners.begin(); miner != m_miners.end(); miner++) {
     for (auto it = m_nodesConnections[*miner].begin();
@@ -1357,6 +1358,7 @@ GhostDagTopologyHelper::GhostDagTopologyHelper(
         latencyStringStream.str("");
         latencyStringStream.clear();
         latencyStringStream << currentLatency << "ms";
+        maxDelay = std::max(currentLatency, maxDelay);
 
         pointToPoint.SetDeviceAttribute("DataRate",
                                         StringValue(bandwidthStream.str()));
@@ -1378,7 +1380,6 @@ GhostDagTopologyHelper::GhostDagTopologyHelper(
   double totalNodeBandwidth = 0;
   double totalNodeLatency = 0;
   int nodeLinkCount = 0;
-  double maxDelay = 0;
 
   for (auto &node : m_nodesConnections) {
     for (auto it = node.second.begin(); it != node.second.end(); it++) {
