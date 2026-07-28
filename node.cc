@@ -332,12 +332,18 @@ void GhostDagNode::SendMessage(enum Messages recv, enum Messages type,
   }
 }
 
-void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
-                                  Address &from) {
+void GhostDagNode::ProcessMessage(enum Messages msg_type,
+                                  const std::string &payload, Address &from) {
+  auto data = nlohmann::json::parse(payload, nullptr, false);
+  if (data.is_discarded()) {
+    NS_LOG_ERROR("Node " << GetNode()->GetId()
+                         << " failed to parse JSON payload");
+    return;
+  }
+
   switch (msg_type) {
   case INV_RELAY_BLOCK: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received INV_RELAY_BLOCK");
-    auto data = nlohmann::json::parse(payload);
     if (data.contains("block_hash")) {
       std::string block_hash = data["block_hash"];
       HandleInvRelayBlock(block_hash, from);
@@ -346,19 +352,16 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
   }
   case REQ_RELAY_BLOCK: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received REQ_RELAY_BLOCK");
-    auto data = nlohmann::json::parse(payload);
     if (data.contains("block_hash")) {
       std::string block_hash = data["block_hash"];
       bool graphene_failed = data.value("graphene_failed", false);
-      uint64_t mempool_count =
-          data.value("mempool_count", static_cast<uint64_t>(m_mempool.size()));
+      uint64_t mempool_count = data.value("mempool_count", uint64_t{0});
       HandleReqRelayBlock(block_hash, graphene_failed, from, mempool_count);
     }
     break;
   }
   case BLOCK: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received BLOCK");
-    auto data = nlohmann::json::parse(payload);
     if (data.contains("block")) {
       Block newBlock;
       auto &blockData = data["block"];
@@ -375,11 +378,15 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
       if (blockData.contains("transactions")) {
         for (auto &txData : blockData["transactions"]) {
           Transaction tx;
-          tx.tx_id = txData.value("tx_id", 0);
-          tx.size_bytes = txData.value("size_bytes", 522);
+          tx.tx_id = txData.value("tx_id", uint64_t{0});
+          tx.size_bytes = txData.value("size_bytes", uint32_t{522});
+          tx.fee = txData.value("fee", uint32_t{0});
           newBlock.transactions.insert(tx);
         }
       }
+
+      EVENT_MSG_RECV(NID, IPV4_STR(from), "block", newBlock.header.block_id,
+                     payload.size());
 
       HandleBlock(newBlock, from);
     }
@@ -387,24 +394,32 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
   }
   case GRAPHENE_BLOCK: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received GRAPHENE_BLOCK");
-    auto data = nlohmann::json::parse(payload);
+    uint64_t block_id = data.value("block_id", uint64_t{0});
+    EVENT_MSG_RECV(NID, IPV4_STR(from), "graphene_block", block_id,
+                   payload.size());
     HandleGrapheneBlock(data, from);
     break;
   }
-  case GRAPHENE_RECOVERY_REQUEST:
+  case GRAPHENE_RECOVERY_REQUEST: {
     NS_LOG_INFO("Node " << GetNode()->GetId()
                         << " received GRAPHENE_RECOVERY_REQUEST");
-    HandleGrapheneRecoveryRequest(nlohmann::json::parse(payload), from);
+    HandleGrapheneRecoveryRequest(data, from);
     break;
-
-  case GRAPHENE_RECOVERY_RESPONSE:
+  }
+  case GRAPHENE_RECOVERY_RESPONSE: {
     NS_LOG_INFO("Node " << GetNode()->GetId()
                         << " received GRAPHENE_RECOVERY_RESPONSE");
-    HandleGrapheneRecoveryResponse(nlohmann::json::parse(payload), from);
+
+    std::string block_hash = data["block_hash"];
+    uint64_t block_id = std::stoull(block_hash);
+    EVENT_MSG_RECV(NID, IPV4_STR(from), "graphene_recovery_response", block_id,
+                   payload.size());
+
+    HandleGrapheneRecoveryResponse(data, from);
     break;
+  }
   case INV_TRANSACTIONS: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received INV_TRANSACTIONS");
-    auto data = nlohmann::json::parse(payload);
     std::vector<std::string> tx_hashes;
     if (data.contains("tx_hashes")) {
       for (auto &tx_hash : data["tx_hashes"]) {
@@ -416,7 +431,6 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
   }
   case REQ_TRANSACTIONS: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received REQ_TRANSACTIONS");
-    auto data = nlohmann::json::parse(payload);
     std::vector<std::string> tx_hashes;
     if (data.contains("tx_hashes")) {
       for (const auto &h : data["tx_hashes"]) {
@@ -428,7 +442,6 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
   }
   case TRANSACTIONS: {
     NS_LOG_INFO("Node " << GetNode()->GetId() << " received TRANSACTIONS");
-    auto data = nlohmann::json::parse(payload);
     std::vector<Transaction> txs;
     if (data.contains("transactions")) {
       for (const auto &txData : data["transactions"]) {
@@ -442,10 +455,9 @@ void GhostDagNode::ProcessMessage(enum Messages msg_type, std::string payload,
     HandleTransactions(txs, from);
     break;
   }
-
   default:
     NS_LOG_ERROR("Node: " << GetNode()->GetId()
-                          << " Received not know message: " << payload);
+                          << " Received unknown message: " << payload);
     break;
   }
 }

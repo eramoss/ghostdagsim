@@ -72,7 +72,7 @@ protected:
   Ptr<Socket> CreatePeerSocket(Ipv4Address peer_addr);
 
   // --- Message Dispatcher ---
-  void ProcessMessage(enum Messages msg_type, std::string payload,
+  void ProcessMessage(enum Messages msg_type, const std::string &payload,
                       Address &from);
 
   // --- 1. Real-Time Propagation Handlers ---
