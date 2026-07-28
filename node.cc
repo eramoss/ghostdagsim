@@ -572,7 +572,6 @@ void GhostDagNode::HandleBlock(const Block &new_block, Address &from) {
   }
 
   uint32_t already_known_txs = 0;
-
   for (const auto &tx : block.transactions) {
     uint32_t miner_id = IdFromTxId(tx.tx_id);
     HtabIterator it = m_mempool.find(miner_id, tx.tx_id);
@@ -596,6 +595,10 @@ void GhostDagNode::HandleBlock(const Block &new_block, Address &from) {
   m_queue_inv.erase(blockHash);
 
   auto before_orphans = m_blockchain.orphans;
+  std::map<uint64_t, bool> was_blue;
+  for (auto &[id, blk] : m_blockchain.blocks)
+    was_blue[id] = blk.is_blue;
+
   m_blockchain.AddBlock(block);
 
   if (m_blockchain.IsOrphan(block.header.block_id)) {
@@ -615,19 +618,24 @@ void GhostDagNode::HandleBlock(const Block &new_block, Address &from) {
     EVENT_BLOCK_COLORED(NID, bid, m_blockchain.blocks[bid].is_blue,
                         m_blockchain.blocks[bid].blue_score,
                         m_blockchain.GetDagWidth());
+  }
 
-    for (const auto &tx : block.transactions) {
-      uint32_t miner_id = IdFromTxId(tx.tx_id);
-      HtabIterator it = m_mempool.find(miner_id, tx.tx_id);
-      if (it.isValid()) {
-        if (m_blockchain.blocks[bid].is_blue)
+  for (auto &[id, blk] : m_blockchain.blocks) {
+    auto prev = was_blue.find(id);
+    bool prev_blue = (prev != was_blue.end()) && prev->second;
+
+    if (blk.is_blue && !prev_blue) {
+      EVENT_BLOCK_COLORED(NID, id, blk.is_blue, blk.blue_score,
+                          m_blockchain.GetDagWidth());
+      for (const auto &tx : blk.transactions) {
+        uint32_t miner_id = IdFromTxId(tx.tx_id);
+        HtabIterator it = m_mempool.find(miner_id, tx.tx_id);
+        if (it.isValid())
           m_mempool.eraseTransaction(it);
+
+        EVENT_TX_CONFIRMED(NID, tx.tx_id, id, blk.header.time_created, true);
       }
     }
-    if (m_blockchain.blocks[bid].is_blue)
-      for (const auto &tx : m_blockchain.blocks[bid].transactions)
-        EVENT_TX_CONFIRMED(NID, tx.tx_id, bid,
-                           m_blockchain.blocks[bid].header.time_created, true);
   }
 
   BroadcastInvBlock(blockHash, peer.GetIpv4());
