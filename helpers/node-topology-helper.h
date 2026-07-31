@@ -196,7 +196,7 @@ private:
   std::map<uint32_t, int> m_maxConnections; //!< Max connections per node
 
   // Random distributions
-  std::default_random_engine m_generator;
+  std::mt19937 m_generator;
   std::piecewise_constant_distribution<double> m_nodesDistribution;
   std::piecewise_constant_distribution<double> m_connectionsDistribution;
   std::piecewise_constant_distribution<double>

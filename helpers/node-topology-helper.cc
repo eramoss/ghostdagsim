@@ -1120,7 +1120,9 @@ GhostDagTopologyHelper::GhostDagTopologyHelper(
         }
         maxConnections = minConnections + index;
       }
-      m_minConnections[i] = minConnections;
+      std::uniform_int_distribution<uint32_t> dist(minConnections,
+                                                   maxConnections);
+      m_minConnections[i] = dist(m_generator);
       m_maxConnections[i] = maxConnections;
     }
   }
