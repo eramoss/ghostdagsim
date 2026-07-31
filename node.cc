@@ -132,6 +132,8 @@ GhostDagNode::GhostDagNode()
   m_inventory_size = 36;
   m_headers_size = 81;
 
+  m_graphene_recovery_timeout = Seconds(10);
+
   m_tid = TcpSocketFactory::GetTypeId();
 }
 
@@ -496,19 +498,25 @@ void GhostDagNode::HandleReqRelayBlock(const std::string &block_hash,
 
   uint64_t block_id = std::stoul(block_hash);
 
-  if (!m_blockchain.HasBlock(block_id)) {
+  const Block *block_ptr = nullptr;
+  if (m_blockchain.HasBlock(block_id)) {
+    block_ptr = &m_blockchain.blocks.at(block_id);
+  } else if (m_blockchain.IsOrphan(block_id)) {
+    auto oit = m_blockchain.orphans.find(block_id);
+    if (oit != m_blockchain.orphans.end()) {
+      block_ptr = &oit->second;
+    }
+  }
+  if (block_ptr == nullptr) {
     return;
   }
-
-  const Block &block = m_blockchain.blocks.at(block_id);
+  const Block &block = *block_ptr;
 
   // If graphene is enabled, send a compact graphene block instead of full.
   if (m_graphene_enabled && !graphene_failed) {
     bloom_filter bf{bloom_parameters()};
-    IBLT iblt(1, GrapheneProtocol::IBLT_VALUE_SIZE, 1, 1);
-    // Use receiver's mempool count for optimal FPR/IBLT sizing
-    uint64_t mc =
-        receiver_mempool_count > 0 ? receiver_mempool_count : m_mempool.size();
+    IBLT iblt(1, GrapheneProtocol::IBLT_VALUE_SIZE, 1.0f, 2);
+    uint64_t mc = receiver_mempool_count;
     GrapheneProtocol::BuildSenderComponents(block.transactions, mc, bf, iblt);
 
     uint64_t tx_checksum = 0;
@@ -655,6 +663,9 @@ void GhostDagNode::HandleGrapheneBlock(const nlohmann::json &data,
   if (m_blockchain.HasBlock(block_id) || m_blockchain.IsOrphan(block_id))
     return;
 
+  if (m_graphene_state.count(block_hash) > 0)
+    return;
+
   auto result = GrapheneProtocol::ProcessIncomingBlock(
       data, m_mempool.getAllEntries(), m_mempool.size());
 
@@ -666,6 +677,10 @@ void GhostDagNode::HandleGrapheneBlock(const nlohmann::json &data,
   }
 
   m_graphene_state[block_hash] = std::move(result.recovery_state);
+  m_graphene_senders[block_hash] = from;
+  m_graphene_timeouts[block_hash] = Simulator::Schedule(
+      m_graphene_recovery_timeout, &GhostDagNode::GrapheneRecoveryTimeout, this,
+      block_hash);
   SendMessage(GRAPHENE_RECOVERY_REQUEST, GRAPHENE_RECOVERY_REQUEST,
               result.recovery_request.dump(), from);
 }
@@ -683,11 +698,20 @@ void GhostDagNode::HandleGrapheneRecoveryRequest(const nlohmann::json &data,
 
   uint64_t block_id = std::stoull(block_hash);
 
-  if (!m_blockchain.HasBlock(block_id)) {
+  const Block *blk_ptr = nullptr;
+  if (m_blockchain.HasBlock(block_id)) {
+    blk_ptr = &m_blockchain.blocks.at(block_id);
+  } else if (m_blockchain.IsOrphan(block_id)) {
+    auto oit = m_blockchain.orphans.find(block_id);
+    if (oit != m_blockchain.orphans.end()) {
+      blk_ptr = &oit->second;
+    }
+  }
+  if (blk_ptr == nullptr) {
     return;
   }
 
-  const Block &blk = m_blockchain.blocks.at(block_id);
+  const Block &blk = *blk_ptr;
 
   std::vector<uint64_t> missing;
 
@@ -728,16 +752,27 @@ void GhostDagNode::HandleGrapheneRecoveryResponse(const nlohmann::json &data,
     Block recovered;
     recovered.header = state.header;
     for (auto txid : result.block_txids) {
-      auto txit = m_mempool.find(IdFromTxId(txid), txid).iterator;
       Transaction tx;
-      tx.fee = txit->fee;
       tx.tx_id = txid;
       tx.size_bytes = 522;
+
+      HtabIterator txit = m_mempool.find(IdFromTxId(txid), txid);
+      if (txit.isValid()) {
+        tx.fee = txit.iterator->fee;
+      }
+
       recovered.transactions.insert(tx);
+      m_known_txs.insert(txid);
     }
 
     HandleBlock(recovered, from);
     m_graphene_state.erase(it);
+    auto te = m_graphene_timeouts.find(block_hash);
+    if (te != m_graphene_timeouts.end()) {
+      Simulator::Cancel(te->second);
+      m_graphene_timeouts.erase(te);
+    }
+    m_graphene_senders.erase(block_hash);
     EVENT_BLOCK_GRAPHENE_SUCCESS2(NID, recovered.header.block_id,
                                   IPV4_STR(from));
     return;
@@ -745,10 +780,48 @@ void GhostDagNode::HandleGrapheneRecoveryResponse(const nlohmann::json &data,
 
   EVENT_BLOCK_GRAPHENE_FALLBACK(NID, state.header.block_id, IPV4_STR(from));
 
+  m_graphene_state.erase(it);
+  auto te = m_graphene_timeouts.find(block_hash);
+  if (te != m_graphene_timeouts.end()) {
+    Simulator::Cancel(te->second);
+    m_graphene_timeouts.erase(te);
+  }
+  m_graphene_senders.erase(block_hash);
+
   nlohmann::json msg;
   msg["block_hash"] = block_hash;
   msg["graphene_failed"] = true;
   SendMessage(NO_MESSAGE, REQ_RELAY_BLOCK, msg.dump(), from);
+}
+
+void GhostDagNode::GrapheneRecoveryTimeout(std::string block_hash) {
+  auto it = m_graphene_state.find(block_hash);
+  if (it == m_graphene_state.end()) {
+    return;
+  }
+
+  uint64_t block_id = std::stoull(block_hash);
+  if (m_blockchain.HasBlock(block_id) || m_blockchain.IsOrphan(block_id)) {
+    m_graphene_state.erase(it);
+    m_graphene_timeouts.erase(block_hash);
+    m_graphene_senders.erase(block_hash);
+    return;
+  }
+
+  auto sit = m_graphene_senders.find(block_hash);
+  if (sit != m_graphene_senders.end()) {
+    EVENT_BLOCK_GRAPHENE_FALLBACK(NID, it->second.header.block_id,
+                                  IPV4_STR(sit->second));
+
+    nlohmann::json msg;
+    msg["block_hash"] = block_hash;
+    msg["graphene_failed"] = true;
+    SendMessage(NO_MESSAGE, REQ_RELAY_BLOCK, msg.dump(), sit->second);
+    m_graphene_senders.erase(sit);
+  }
+
+  m_graphene_state.erase(it);
+  m_graphene_timeouts.erase(block_hash);
 }
 // =========================================================================
 
@@ -771,6 +844,9 @@ void GhostDagNode::InvTimeoutExpired(std::string block_hash) {
 
     nlohmann::json req;
     req["block_hash"] = block_hash;
+    if (m_graphene_enabled) {
+      req["mempool_count"] = static_cast<uint64_t>(m_mempool.size());
+    }
     SendMessage(NO_MESSAGE, REQ_RELAY_BLOCK, req.dump(), next);
 
     m_inv_timeouts[block_hash] =

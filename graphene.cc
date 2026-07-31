@@ -58,6 +58,32 @@ void BuildIBLTFromIds(IBLT &iblt, const std::vector<uint64_t> &ids) {
     iblt.insert(id, GrapheneProtocol::U64ToVec(id));
 }
 
+std::string HexEncode(const uint8_t *data, size_t n) {
+  static const char *hex_chars = "0123456789abcdef";
+  std::string hex;
+  hex.reserve(n * 2);
+  for (size_t i = 0; i < n; ++i) {
+    hex.push_back(hex_chars[data[i] >> 4]);
+    hex.push_back(hex_chars[data[i] & 0x0f]);
+  }
+  return hex;
+}
+
+uint64_t HexDecodeU64(const std::string &hex) {
+  auto h2 = [](char c) -> unsigned char {
+    if (c >= '0' && c <= '9')
+      return static_cast<unsigned char>(c - '0');
+    return static_cast<unsigned char>(10 + (c - 'a'));
+  };
+
+  uint64_t v = 0;
+  for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+    uint8_t byte = static_cast<uint8_t>((h2(hex[i]) << 4) | h2(hex[i + 1]));
+    v |= static_cast<uint64_t>(byte) << (i / 2 * 8); // little-endian
+  }
+  return v;
+}
+
 } // anonymous namespace
 //
 
@@ -123,7 +149,7 @@ double OptimalSymDiff(uint64_t nBlockTxs, uint64_t nReceiverPoolTx) {
    * L(a) as defined in the code below. (Note that meta parameters for the
    * Bloom Filter and IBLT are ignored).
    */
-  if (nReceiverPoolTx >= nBlockTxs - 1)
+  if (nReceiverPoolTx <= nBlockTxs - 1)
     throw std::runtime_error("Assume reciever is missing only one tx");
 
   if (nReceiverPoolTx > LARGE_MEM_POOL_SIZE)
@@ -198,7 +224,6 @@ GrapheneProtocol::BuildSenderComponents(const std::set<Transaction> &block_txs,
     if (n < m + 1)
       optSymDiff = OptimalSymDiff(n, m);
   } catch (const std::runtime_error &e) {
-    // EVENT
   }
 
   // Sender's estimate of number of items in both block and receiver mempool
@@ -505,7 +530,8 @@ nlohmann::json GrapheneProtocol::SerializeIBLT(const IBLT &iblt) {
   for (const auto &e : entries) {
     nlohmann::json entry;
     entry["count"] = e.count;
-    entry["key_sum"] = static_cast<double>(e.keySum);
+    entry["key_sum"] = HexEncode(reinterpret_cast<const uint8_t *>(&e.keySum),
+                                 sizeof(e.keySum));
     entry["key_check"] = static_cast<uint64_t>(e.keyCheck);
 
     std::string hex;
@@ -530,7 +556,7 @@ IBLT GrapheneProtocol::DeserializeIBLT(const nlohmann::json &j) {
   for (const auto &e : j["entries"]) {
     IBLT::Entry entry;
     entry.count = e["count"].get<int32_t>();
-    entry.keySum = static_cast<uint64_t>(e["key_sum"].get<double>());
+    entry.keySum = HexDecodeU64(e["key_sum"].get<std::string>());
     entry.keyCheck = e["key_check"].get<uint32_t>();
 
     std::string hex = e["value_sum"].get<std::string>();

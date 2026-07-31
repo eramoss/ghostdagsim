@@ -81,6 +81,7 @@ int main(int argc, char *argv[]) {
   int mempoolSize = 10000;
   double txFeeLambda = 150.0;
   double txGenInterval = 0.5;
+  double invTimeoutSeconds = 20.0;
 
   int targetBlocksPerMiner = 1000;
 
@@ -135,6 +136,9 @@ int main(int argc, char *argv[]) {
   cmd.AddValue("run_name", "Name tag for this simulation run",
                metrics_scenario);
   cmd.AddValue("graphene", "Use graphene relay handler", graphene);
+  cmd.AddValue("inv_timeout",
+               "INV retry timeout in seconds (retry the next announcer)",
+               invTimeoutSeconds);
   cmd.Parse(argc, argv);
 
   if (noMiners > totalNoNodes) {
@@ -213,6 +217,8 @@ int main(int argc, char *argv[]) {
 
       minerHelper.SetAttribute("TxGenInterval", DoubleValue(txGenInterval));
       minerHelper.SetAttribute("GrapheneEnabled", BooleanValue(graphene));
+      minerHelper.SetAttribute("InvTimeoutMinutes",
+                               TimeValue(Seconds(invTimeoutSeconds)));
 
       ghostdagMiners.Add(minerHelper.Install(targetNode));
     }
@@ -234,6 +240,7 @@ int main(int argc, char *argv[]) {
     cfg["tx_gen_interval"] = txGenInterval;
     cfg["txs_per_block"] = txsPerBlock;
     cfg["graphene"] = graphene;
+    cfg["inv_timeout_seconds"] = invTimeoutSeconds;
     cfg["min_conn"] = minConnectionsPerNode;
     cfg["max_conn"] = maxConnectionsPerNode;
     cfg["max_delay"] = topologyHelper.m_maxDelay;
@@ -279,6 +286,8 @@ int main(int argc, char *argv[]) {
         nodeHelper.SetAttribute("TxFeeLambda", DoubleValue(txFeeLambda));
         nodeHelper.SetAttribute("TxGenInterval", DoubleValue(txGenInterval));
         nodeHelper.SetAttribute("GrapheneEnabled", BooleanValue(graphene));
+        nodeHelper.SetAttribute("InvTimeoutMinutes",
+                                TimeValue(Seconds(invTimeoutSeconds)));
 
         ghostdagNodes.Add(nodeHelper.Install(targetNode));
       }

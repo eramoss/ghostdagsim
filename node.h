@@ -87,8 +87,12 @@ protected:
 
   void HandleGrapheneRecoveryResponse(const nlohmann::json &data,
                                       Address &from);
+  void GrapheneRecoveryTimeout(std::string block_hash);
 
   std::map<std::string, GrapheneState> m_graphene_state;
+  std::map<std::string, EventId> m_graphene_timeouts;
+  std::map<std::string, Address> m_graphene_senders;
+  Time m_graphene_recovery_timeout;
 
   // --- 2. Mempool management ---
   void HandleInvTransactions(const std::vector<std::string> &tx_hashes,
